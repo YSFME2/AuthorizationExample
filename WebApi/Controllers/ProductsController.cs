@@ -12,6 +12,8 @@ namespace WebApi.Controllers
 {
     [Route("api/[controller]")]
     [ApiController]
+    [Produces("application/json")]
+    [Authorize]
     public class ProductsController : ControllerBase
     {
         private readonly AppDbContext _context;
@@ -23,7 +25,7 @@ namespace WebApi.Controllers
 
         // GET: api/Products
         [HttpGet]
-        [Authorize]
+        [AllowAnonymous]
         public async Task<ActionResult<IEnumerable<Product>>> GetProducts()
         {
             return await _context.Products.ToListAsync();
@@ -31,6 +33,7 @@ namespace WebApi.Controllers
 
         // GET: api/Products/5
         [HttpGet("{id}")]
+        [Authorize(Roles = "Admin")]
         public async Task<ActionResult<Product>> GetProduct(int id)
         {
             var product = await _context.Products.FindAsync(id);

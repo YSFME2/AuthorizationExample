@@ -8,5 +8,6 @@ namespace WebApi.Services
     {
         Task<RegistrationResultDto> Registration(RegistrationRequest request);
         Task<LoginResultDto> Login(LoginRequest request);
+        Task<AssignRoleResultResponse> AssignRole(AssignRoleRequest request);
     }
 }
