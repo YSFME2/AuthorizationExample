@@ -2,10 +2,10 @@
 
 namespace WebApi.Models.Dtos
 {
-    public class RegistrationResultDto
+    public class AuthenticationResultDto
     {
         public bool IsSuccess { get; set; }
-        public List<ErrorResponse> Errors { get; set; }
+        public List<ErrorResponse> Errors { get; set; } = new List<ErrorResponse>();
         public AuthenticationResponse? Authentication { get; set; }
     }
 }

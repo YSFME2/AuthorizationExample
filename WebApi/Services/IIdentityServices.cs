@@ -6,8 +6,10 @@ namespace WebApi.Services
 {
     public interface IIdentityServices
     {
-        Task<RegistrationResultDto> Registration(RegistrationRequest request);
-        Task<LoginResultDto> Login(LoginRequest request);
+        Task<AuthenticationResultDto> Registration(RegistrationRequest request);
+        Task<AuthenticationResultDto> Login(LoginRequest request);
+        Task<AuthenticationResultDto> RefreshToken(string refreshToken);
+        Task<bool> RevokeRefreshToken(string refreshToken);
         Task<AssignRoleResultResponse> AssignRole(AssignRoleRequest request);
     }
 }

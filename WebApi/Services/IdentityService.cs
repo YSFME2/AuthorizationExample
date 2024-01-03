@@ -11,6 +11,7 @@ using WebApi.Models.Dtos;
 using WebApi.Models.Requests;
 using WebApi.Models.Responses;
 using WebApi.Settings;
+using Microsoft.EntityFrameworkCore;
 
 namespace WebApi.Services
 {
@@ -37,30 +38,30 @@ namespace WebApi.Services
             return new AssignRoleResultResponse { IsSuccess = true };
         }
 
-        public async Task<LoginResultDto> Login(LoginRequest request)
+        public async Task<AuthenticationResultDto> Login(LoginRequest request)
         {
             var user = await _userManager.FindByEmailAsync(request.Email);
             if (user is null || !await _userManager.CheckPasswordAsync(user, request.Password))
             {
-                return new LoginResultDto
+                return new AuthenticationResultDto
                 {
                     Errors = [new() { Code = "UserCredentials", Description = "User not Exist or wrong credentials" }]
                 };
             }
-            return new LoginResultDto
+            return new AuthenticationResultDto
             {
                 IsSuccess = true,
                 Authentication = await GenerateToken(user)
             };
         }
 
-        public async Task<RegistrationResultDto> Registration(RegistrationRequest request)
+        public async Task<AuthenticationResultDto> Registration(RegistrationRequest request)
         {
             var x = _jwtSettings.Secret;
             var existingUser = await _userManager.FindByEmailAsync(request.Email);
             if (existingUser is not null)
             {
-                return new RegistrationResultDto
+                return new AuthenticationResultDto
                 {
                     Errors = [new() { Code = "", Description = "Email is already exist" }]
                 };
@@ -76,7 +77,7 @@ namespace WebApi.Services
             var result = await _userManager.CreateAsync(appUser, request.Password.Trim());
             if (!result.Succeeded)
             {
-                return new RegistrationResultDto
+                return new AuthenticationResultDto
                 {
                     Errors = result.Errors.Select(error => new ErrorResponse() { Code = error.Code, Description = error.Description }).ToList(),
                 };
@@ -84,33 +85,74 @@ namespace WebApi.Services
 
             await _userManager.AddToRoleAsync(appUser, "User");
 
-            return new RegistrationResultDto
+            return new AuthenticationResultDto
             {
                 IsSuccess = true,
                 Authentication = await GenerateToken(appUser)
             };
         }
 
-        private async Task<AuthenticationResponse> GenerateToken(AppUser appUser)
+        public async Task<AuthenticationResultDto> RefreshToken(string refreshToken)
         {
-            var claims = await _userManager.GetClaimsAsync(appUser);
-            var roles = await _userManager.GetRolesAsync(appUser);
+            var result = new AuthenticationResultDto();
+            var user = await _userManager.Users.SingleOrDefaultAsync(x => x.RefreshTokens.Any(t => t.Token == refreshToken));
+            if(user == null)
+            {
+                result.Errors.Add(new ErrorResponse() { Code = "RefreshToken", Description = "Invalid or Expired Refresh Token" });
+                return result;
+            }
+
+            var token = user.RefreshTokens.First(x => x.Token == refreshToken);
+            if (!token.IsActive)
+            {
+                result.Errors.Add(new ErrorResponse() { Code = "RefreshToken", Description = "Invalid or Expired Refresh Token" });
+                return result;
+            }
+
+            token.RevokedOn = DateTime.Now;
+            await _userManager.UpdateAsync(user);
+
+            result.IsSuccess = true;
+            result.Authentication = await GenerateToken(user);
+            return result;
+        }
+
+        public async Task<bool> RevokeRefreshToken(string refreshToken)
+        {
+            var user = await _userManager.Users.SingleOrDefaultAsync(x => x.RefreshTokens.Any(t => t.Token == refreshToken));
+            if (user == null)
+                return false;
+
+
+            var token = user.RefreshTokens.First(x => x.Token == refreshToken);
+            if (!token.IsActive)
+                return true;
+
+            token.RevokedOn = DateTime.Now;
+            await _userManager.UpdateAsync(user);
+            return true;
+        }
+
+        private async Task<AuthenticationResponse> GenerateToken(AppUser user)
+        {
+            var claims = await _userManager.GetClaimsAsync(user);
+            var roles = await _userManager.GetRolesAsync(user);
 
             foreach (var role in roles)
                 claims.Add(new Claim("roles", role));
 
             claims.AddRange([
-                new(JwtRegisteredClaimNames.Sub, appUser.UserName),
+                new(JwtRegisteredClaimNames.Sub, user.UserName),
                 new(JwtRegisteredClaimNames.Jti,Guid.NewGuid().ToString()),
-                new(JwtRegisteredClaimNames.Email , appUser.Email),
-                new(JwtRegisteredClaimNames.Name,appUser.FullName),
-                new("uid",appUser.Id)
+                new(JwtRegisteredClaimNames.Email , user.Email),
+                new(JwtRegisteredClaimNames.Name,user.FullName),
+                new("uid",user.Id)
                 ]);
 
             var symmetricSecurityKey = new SymmetricSecurityKey(Encoding.ASCII.GetBytes(_jwtSettings.Secret));
             var signingCredentials = new SigningCredentials(symmetricSecurityKey, SecurityAlgorithms.HmacSha256);
 
-            var expiration = DateTime.Now.AddDays(_jwtSettings.ExpirationInDaies);
+            var expiration = DateTime.Now.AddDays(_jwtSettings.ExpirationInDays).AddMinutes(_jwtSettings.ExpirationInMinutes);
 
             var jwtSecurityToken = new JwtSecurityToken(
                 issuer: _jwtSettings.Issuer,
@@ -119,13 +161,42 @@ namespace WebApi.Services
                 expires: expiration,
                 signingCredentials: signingCredentials);
 
-            return new AuthenticationResponse
+            var authenticationResponse =  new AuthenticationResponse
             {
-                Email = appUser.Email,
+                Email = user.Email,
                 Expiration = expiration,
-                FullName = appUser.FullName,
+                FullName = user.FullName,
                 Roles = roles.ToList(),
                 Token = new JwtSecurityTokenHandler().WriteToken(jwtSecurityToken)
+            };
+
+            if (user.RefreshTokens.Any(x => x.IsActive))
+            {
+                var refreshToken = user.RefreshTokens.First(x => x.IsActive);
+                refreshToken.ExpireOn = DateTime.Now.AddDays(_jwtSettings.RefreshTokenExpirationInDays);
+                await _userManager.UpdateAsync(user);
+                authenticationResponse.RefreshToken = refreshToken.Token;
+                authenticationResponse.RefreshTokenExpiration = refreshToken.ExpireOn;
+            }
+            else
+            {
+                var refreshToken = GenerateRefreshToken(user.Id);
+                user.RefreshTokens.Add(refreshToken);
+                await _userManager.UpdateAsync(user);
+                authenticationResponse.RefreshToken = refreshToken.Token;
+                authenticationResponse.RefreshTokenExpiration = refreshToken.ExpireOn;
+            }
+
+            return authenticationResponse;
+        }
+
+        private RefreshToken GenerateRefreshToken(string userId)
+        {
+            return new RefreshToken()
+            {
+                Token = Convert.ToBase64String(Encoding.ASCII.GetBytes(userId += DateTime.UtcNow.Ticks.ToString() + Guid.NewGuid().ToString())),
+                CreatedOn = DateTime.Now,
+                ExpireOn = DateTime.Now.AddDays(_jwtSettings.RefreshTokenExpirationInDays),
             };
         }
     }
